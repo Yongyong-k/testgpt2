@@ -10,7 +10,6 @@ from pytorch_lightning.core.lightning import LightningModule
 from torch.utils.data import DataLoader, Dataset
 from transformers.optimization import AdamW, get_cosine_schedule_with_warmup
 from transformers import PreTrainedTokenizerFast, GPT2LMHeadModel
-from konlpy.tag import Kkma
 
 parser = argparse.ArgumentParser(description='Comment fine-tuned KoGPT2')
 
@@ -19,14 +18,11 @@ parser.add_argument('--chat',
                     default=False,
                     help='response generation on given user input')
 
+
 parser.add_argument('--model_params',
                     type=str,
                     default='NONE',
                     help='model binary for starting chat')
-
-parser.add_argument('--dataset_path',
-                    type=str,
-                    default='NONE')
 
 parser.add_argument('--train',
                     action='store_true',
@@ -113,17 +109,17 @@ class CommentKoGPT2(LightningModule):
     def forward(self, inputs, labels):
         output = self.kogpt2(inputs, labels=labels, return_dict=True)
         
-        return output.logits
+        return output
 
     def training_step(self, batch, batch_idx):
         token_ids, mask, label = batch
-        out = self(token_ids)
-        mask_3d = mask.unsqueeze(dim=2).repeat_interleave(repeats=out.shape[2], dim=2)
-        mask_out = torch.where(mask_3d == 1, out, self.neg * torch.ones_like(out))
-        loss = self.loss_function(mask_out.transpose(2, 1), label)
-        loss_avg = loss.sum() / mask.sum()
-        self.log('train_loss', loss_avg)
-        return loss_avg
+        data = token_ids.transpose(1, 0)
+        outputs = self.forward(data, data)
+        
+        loss, logits = outputs[:2]
+        self.log('train_log', loss)
+        
+        return loss
 
     def configure_optimizers(self):
         # Prepare optimizer
@@ -153,13 +149,14 @@ class CommentKoGPT2(LightningModule):
         return torch.LongTensor(data), torch.LongTensor(mask), torch.LongTensor(label)
 
     def train_dataloader(self):
-        with open('/content/drive/MyDrive/Colab Notebooks/CommentGPT2/total_list/total_list_7_kss.txt', 'r') as f:
+        with open('/content/drive/MyDrive/Colab Notebooks/CommentGPT2/total_list/New_essay.txt', 'r') as f:
             data = f.readlines()
         self.train_set = CommentDataset(data, max_len=self.hparams.max_len)
         train_dataloader = DataLoader(
             self.train_set, batch_size=self.hparams.batch_size, num_workers=1,
             shuffle=True, collate_fn=self._collate_fn)
         return train_dataloader
+
 
 
     def generate_sent(text, model):

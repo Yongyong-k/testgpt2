@@ -10,6 +10,7 @@ from pytorch_lightning.core.lightning import LightningModule
 from torch.utils.data import DataLoader, Dataset
 from transformers.optimization import AdamW, get_cosine_schedule_with_warmup
 from transformers import PreTrainedTokenizerFast, GPT2LMHeadModel
+from konlpy.tag import Kkma
 
 parser = argparse.ArgumentParser(description='Comment fine-tuned KoGPT2')
 
@@ -20,8 +21,12 @@ parser.add_argument('--chat',
 
 parser.add_argument('--model_params',
                     type=str,
-                    default='lightning_logs/version_0/checkpoints/model_-last.ckpt',
+                    default='NONE',
                     help='model binary for starting chat')
+
+parser.add_argument('--dataset_path',
+                    type=str,
+                    default='NONE')
 
 parser.add_argument('--train',
                     action='store_true',
@@ -108,17 +113,17 @@ class CommentKoGPT2(LightningModule):
     def forward(self, inputs, labels):
         output = self.kogpt2(inputs, labels=labels, return_dict=True)
         
-        return output
+        return output.logits
 
     def training_step(self, batch, batch_idx):
         token_ids, mask, label = batch
-        data = token_ids.transpose(1, 0)
-        outputs = self.forward(data, data)
-        
-        loss, logits = outputs[:2]
-        self.log('train_log', loss)
-        
-        return loss
+        out = self(token_ids)
+        mask_3d = mask.unsqueeze(dim=2).repeat_interleave(repeats=out.shape[2], dim=2)
+        mask_out = torch.where(mask_3d == 1, out, self.neg * torch.ones_like(out))
+        loss = self.loss_function(mask_out.transpose(2, 1), label)
+        loss_avg = loss.sum() / mask.sum()
+        self.log('train_loss', loss_avg)
+        return loss_avg
 
     def configure_optimizers(self):
         # Prepare optimizer
@@ -148,13 +153,52 @@ class CommentKoGPT2(LightningModule):
         return torch.LongTensor(data), torch.LongTensor(mask), torch.LongTensor(label)
 
     def train_dataloader(self):
-        with open('total.txt', 'r') as f:
+        with open('/content/drive/MyDrive/Colab Notebooks/CommentGPT2/total_list/total_list_7_kss.txt', 'r') as f:
             data = f.readlines()
         self.train_set = CommentDataset(data, max_len=self.hparams.max_len)
         train_dataloader = DataLoader(
             self.train_set, batch_size=self.hparams.batch_size, num_workers=1,
             shuffle=True, collate_fn=self._collate_fn)
         return train_dataloader
+
+
+    def generate_sent(text, model):
+      
+     tokenizer = PreTrainedTokenizerFast.from_pretrained("skt/kogpt2-base-v2",
+        bos_token='</s>', eos_token='</s>', unk_token='<unk>',
+        pad_token='<pad>', mask_token='<mask>') 
+       
+     input_ids = tokenizer.encode(text)
+     gen_ids = model.kogpt2.generate(torch.tensor([input_ids]),
+                           max_length=128,
+                           repetition_penalty=2.0,
+                           pad_token_id=tokenizer.pad_token_id,
+                           eos_token_id=tokenizer.eos_token_id,
+                           bos_token_id=tokenizer.bos_token_id,
+                           use_cache=True)
+     generated = tokenizer.decode(gen_ids[0,:].tolist())
+     print(generated)
+     return generated
+    
+    def gen_word(text,model):
+    
+     tokenizer = PreTrainedTokenizerFast.from_pretrained("skt/kogpt2-base-v2",
+        bos_token='</s>', eos_token='</s>', unk_token='<unk>',
+        pad_token='<pad>', mask_token='<mask>') 
+       
+     input_ids = tokenizer.encode(text)
+     gen_ids = model.kogpt2.generate(torch.tensor([input_ids]),
+                           max_length=64,
+                           repetition_penalty=2.0,
+                           pad_token_id=tokenizer.pad_token_id,
+                           eos_token_id=tokenizer.eos_token_id,
+                           bos_token_id=tokenizer.bos_token_id,
+                           use_cache=True)
+     generated = tokenizer.decode(gen_ids[0,:].tolist())
+     kkma = Kkma()
+     gen_word=kkma.nouns(generated)
+     print(gen_word)
+     return gen_word
 
 parser = CommentKoGPT2.add_model_specific_args(parser)
 parser = Trainer.add_argparse_args(parser)
@@ -171,7 +215,10 @@ if __name__ == "__main__":
             mode='min',
             prefix='model_'
         )
-        model = CommentKoGPT2(args)
+        if args.model_params == "NONE":
+            model = CommentKoGPT2(args)
+        else:
+            model = CommentKoGPT2.load_from_checkpoint(args.model_params)
         model.train()
         trainer = Trainer.from_argparse_args(
             args,
@@ -181,22 +228,10 @@ if __name__ == "__main__":
 
     if args.chat:
        model = CommentKoGPT2.load_from_checkpoint(args.model_params)
-       #from generation_utils import GenerationMixin
-
-       tokenizer = PreTrainedTokenizerFast.from_pretrained("skt/kogpt2-base-v2",
-       bos_token='</s>', eos_token='</s>', unk_token='<unk>',
-       pad_token='<pad>', mask_token='<mask>') 
-       text = input("문장을 입력해주세요.")
-       input_ids = tokenizer.encode(text)
-       gen_ids = model.kogpt2.generate(torch.tensor([input_ids]),
-                           max_length=128,
-                           repetition_penalty=2.0,
-                           pad_token_id=tokenizer.pad_token_id,
-                           eos_token_id=tokenizer.eos_token_id,
-                           bos_token_id=tokenizer.bos_token_id,
-                           use_cache=True)
-       generated = tokenizer.decode(gen_ids[0,:].tolist())
-       print(generated)
+       text = input("문장을 입력하세요 :")
+       CommentKoGPT2.generate_sent(text,model)
+       CommentKoGPT2.gen_word(text,model)
+      
 
 
        
